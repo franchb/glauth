@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/syslog"
 	"os"
 	"regexp"
 	"strings"
@@ -42,16 +41,6 @@ func InitLogging(reqdebug bool, reqsyslog bool, reqstructlog bool) zerolog.Logge
 	}
 
 	var logr zerolog.Logger
-	if reqsyslog {
-		s, err := syslog.New(syslog.LOG_INFO, "glauth")
-		if err != nil {
-			fmt.Println("Unable to write to syslog: ignoring...")
-			reqsyslog = false
-		} else {
-			writers := zerolog.MultiLevelWriter(mainWriter, zerolog.SyslogLevelWriter(s))
-			logr = zerolog.New(writers).Level(level).With().Timestamp().Logger()
-		}
-	}
 
 	if !reqsyslog {
 		logr = zerolog.New(mainWriter).Level(level).With().Timestamp().Logger()

@@ -3,12 +3,8 @@ package handler
 import (
 	"context"
 
-	"github.com/rs/zerolog"
-	"go.opentelemetry.io/otel/trace"
-
-	"github.com/GeertJohan/yubigo"
-	"github.com/glauth/glauth/v2/internal/monitoring"
 	"github.com/glauth/glauth/v2/pkg/config"
+	"github.com/rs/zerolog"
 )
 
 // Option defines a single option function.
@@ -21,11 +17,8 @@ type Options struct {
 	Logger     *zerolog.Logger
 	Config     *config.Config
 	Context    *context.Context
-	YubiAuth   *yubigo.YubiAuth
 	Helper     Handler
 	LDAPHelper LDAPOpsHelper
-	Monitor    monitoring.MonitorInterface
-	Tracer     trace.Tracer
 }
 
 // newOptions initializes the available default options.
@@ -85,13 +78,6 @@ func Context(val *context.Context) Option {
 	}
 }
 
-// YubiAuth provides a function to set the yubiauth option.
-func YubiAuth(val *yubigo.YubiAuth) Option {
-	return func(o *Options) {
-		o.YubiAuth = val
-	}
-}
-
 // Helper If we specified a helper, for instance for OTP injection
 func Helper(val Handler) Option {
 	return func(o *Options) {
@@ -103,19 +89,5 @@ func Helper(val Handler) Option {
 func LDAPHelper(val LDAPOpsHelper) Option {
 	return func(o *Options) {
 		o.LDAPHelper = val
-	}
-}
-
-// Monitor provides a function to set the monitor option.
-func Monitor(val monitoring.MonitorInterface) Option {
-	return func(o *Options) {
-		o.Monitor = val
-	}
-}
-
-// Tracer provides a function to set the tracer option.
-func Tracer(val trace.Tracer) Option {
-	return func(o *Options) {
-		o.Tracer = val
 	}
 }

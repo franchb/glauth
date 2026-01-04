@@ -14,13 +14,10 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
-	"go.opentelemetry.io/otel/trace"
 
-	"github.com/GeertJohan/yubigo"
 	"github.com/glauth/glauth/v2/pkg/config"
 	"github.com/glauth/glauth/v2/pkg/stats"
 	"github.com/glauth/ldap"
-	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -31,7 +28,6 @@ type LDAPOpsHandler interface {
 	GetBackend() config.Backend
 	GetLog() *zerolog.Logger
 	GetCfg() *config.Config
-	GetYubikeyAuth() *yubigo.YubiAuth
 
 	FindUser(ctx context.Context, userName string, searchByUPN bool) (f bool, u config.User, err error)
 	FindGroup(ctx context.Context, groupName string) (f bool, g config.Group, err error)
@@ -52,23 +48,17 @@ type sourceInfo struct {
 type LDAPOpsHelper struct {
 	sources     map[string]*sourceInfo
 	nextPruning time.Time
-
-	tracer trace.Tracer
 }
 
-func NewLDAPOpsHelper(tracer trace.Tracer) LDAPOpsHelper {
+func NewLDAPOpsHelper() LDAPOpsHelper {
 	helper := LDAPOpsHelper{
 		sources:     make(map[string]*sourceInfo),
 		nextPruning: time.Now(),
-		tracer:      tracer,
 	}
 	return helper
 }
 
 func (l LDAPOpsHelper) Bind(ctx context.Context, h LDAPOpsHandler, bindDN, bindSimplePw string, conn net.Conn) (resultCode ldap.LDAPResultCode, err error) {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.Bind")
-	defer span.End()
-
 	if l.isInTimeout(ctx, h, conn) {
 		return ldap.LDAPResultUnwillingToPerform, nil
 	}
@@ -97,35 +87,11 @@ func (l LDAPOpsHelper) Bind(ctx context.Context, h LDAPOpsHandler, bindDN, bindS
 		validotp = true
 	}
 
-	if len(user.Yubikey) > 0 && h.GetYubikeyAuth() != nil {
-		if len(bindSimplePw) > 44 {
-			otp := bindSimplePw[len(bindSimplePw)-44:]
-			yubikeyid := otp[0:12]
-			bindSimplePw = bindSimplePw[:len(bindSimplePw)-44]
-
-			if user.Yubikey == yubikeyid {
-				_, ok, _ := h.GetYubikeyAuth().Verify(otp)
-
-				if ok {
-					validotp = true
-				}
-			}
-		}
-	}
-
 	// Store the full bind password provided before possibly modifying
 	// in the otp check
 	untouchedBindSimplePw := bindSimplePw
 
 	// Test OTP if is exists
-	if len(user.OTPSecret) > 0 && !validotp {
-		if len(bindSimplePw) > 6 {
-			otp := bindSimplePw[len(bindSimplePw)-6:]
-			bindSimplePw = bindSimplePw[:len(bindSimplePw)-6]
-
-			validotp = totp.Validate(otp, user.OTPSecret)
-		}
-	}
 
 	// finally, validate user's pw
 
@@ -219,9 +185,6 @@ func (l LDAPOpsHelper) Bind(ctx context.Context, h LDAPOpsHandler, bindDN, bindS
  * Document roll out of schemas
  */
 func (l LDAPOpsHelper) Search(ctx context.Context, h LDAPOpsHandler, bindDN string, searchReq ldap.SearchRequest, conn net.Conn) (result ldap.ServerSearchResult, err error) {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.Search")
-	defer span.End()
-
 	if l.isInTimeout(ctx, h, conn) {
 		return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultUnwillingToPerform}, fmt.Errorf("Source is in a timeout")
 	}
@@ -318,9 +281,6 @@ func (l LDAPOpsHelper) Search(ctx context.Context, h LDAPOpsHandler, bindDN stri
 
 // Returns: LDAPResultSuccess or any ldap code returned by findUser
 func (l LDAPOpsHelper) searchCheckBindDN(ctx context.Context, h LDAPOpsHandler, baseDN string, bindDN string, anonymous bool) (newBindDN string, boundUser *config.User, ldapresultcode ldap.LDAPResultCode) {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.searchCheckBindDN")
-	defer span.End()
-
 	boundUser, ldapcode := l.findUser(ctx, h, bindDN, false /* checkGroup */)
 	if ldapcode != ldap.LDAPResultSuccess {
 		return "", nil, ldapcode
@@ -338,9 +298,6 @@ func (l LDAPOpsHelper) searchCheckBindDN(ctx context.Context, h LDAPOpsHandler, 
 // Search RootDSE and return information on the server
 // Returns: LDAPResultSuccess, LDAPResultOther, LDAPResultUnwillingToPerform, LDAPResultInsufficientAccessRights
 func (l LDAPOpsHelper) searchMaybeRootDSEQuery(ctx context.Context, h LDAPOpsHandler, baseDN string, searchBaseDN string, searchReq ldap.SearchRequest, anonymous bool) (resultentries []*ldap.Entry, ldapresultcode ldap.LDAPResultCode) {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.searchMaybeRootDSEQuery")
-	defer span.End()
-
 	if searchBaseDN != "" {
 		return nil, ldap.LDAPResultOther // OK
 	}
@@ -348,9 +305,6 @@ func (l LDAPOpsHelper) searchMaybeRootDSEQuery(ctx context.Context, h LDAPOpsHan
 	if searchReq.Scope != ldap.ScopeBaseObject {
 		h.GetLog().Info().Interface("src", searchReq.Controls).Msg("Search Error: No BaseDN provided")
 		return nil, ldap.LDAPResultUnwillingToPerform // KO
-	}
-	if anonymous && !h.GetBackend().AnonymousDSE {
-		return nil, ldap.LDAPResultInsufficientAccessRights // KO
 	}
 
 	h.GetLog().Info().Str("special case", "root DSE").Msg("Search request")
@@ -377,9 +331,6 @@ func (l LDAPOpsHelper) searchMaybeRootDSEQuery(ctx context.Context, h LDAPOpsHan
 // Search and return the information, after indirection from the RootDSE
 // Returns: LDAPResultSuccess, LDAPResultOther, LDAPResultOperationsError
 func (l LDAPOpsHelper) searchMaybeSchemaQuery(ctx context.Context, h LDAPOpsHandler, baseDN string, searchBaseDN string, searchReq ldap.SearchRequest, anonymous bool) (resultentries []*ldap.Entry, ldapresultcode ldap.LDAPResultCode, attributename *string) {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.searchMaybeSchemaQuery")
-	defer span.End()
-
 	if searchBaseDN != "cn=schema" {
 		return nil, ldap.LDAPResultOther, nil // OK
 	}
@@ -419,9 +370,6 @@ func (l LDAPOpsHelper) searchMaybeSchemaQuery(ctx context.Context, h LDAPOpsHand
 // Retrieve the top-levell nodes, i.e. the baseDN, groups, members...
 // Returns: LDAPResultSuccess, LDAPResultOther
 func (l LDAPOpsHelper) searchMaybeTopLevelNodes(ctx context.Context, h LDAPOpsHandler, baseDN string, searchBaseDN string, searchReq ldap.SearchRequest) (resultentries []*ldap.Entry, ldapresultcode ldap.LDAPResultCode) {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.searchMaybeTopLevelNodes")
-	defer span.End()
-
 	if baseDN != searchBaseDN {
 		return nil, ldap.LDAPResultOther // OK
 	}
@@ -453,9 +401,6 @@ func (l LDAPOpsHelper) searchMaybeTopLevelNodes(ctx context.Context, h LDAPOpsHa
 // Search starting from and including the ou=groups node
 // Returns: LDAPResultSuccess, LDAPResultOther
 func (l LDAPOpsHelper) searchMaybeTopLevelGroupsNode(ctx context.Context, h LDAPOpsHandler, baseDN string, searchBaseDN string, searchReq ldap.SearchRequest) (resultentries []*ldap.Entry, ldapresultcode ldap.LDAPResultCode) {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.searchMaybeTopLevelGroupsNode")
-	defer span.End()
-
 	if searchBaseDN != fmt.Sprintf("ou=groups,%s", baseDN) {
 		return nil, ldap.LDAPResultOther // OK
 	}
@@ -479,9 +424,6 @@ func (l LDAPOpsHelper) searchMaybeTopLevelGroupsNode(ctx context.Context, h LDAP
 // Search starting from and including the ou=users node
 // Returns: LDAPResultSuccess, LDAPResultOther
 func (l LDAPOpsHelper) searchMaybeTopLevelUsersNode(ctx context.Context, h LDAPOpsHandler, baseDN string, searchBaseDN string, searchReq ldap.SearchRequest) (resultentries []*ldap.Entry, ldapresultcode ldap.LDAPResultCode) {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.searchMaybeTopLevelUsersNode")
-	defer span.End()
-
 	if searchBaseDN != fmt.Sprintf("ou=users,%s", baseDN) {
 		return nil, ldap.LDAPResultOther // OK
 	}
@@ -512,9 +454,6 @@ func (l LDAPOpsHelper) searchMaybeTopLevelUsersNode(ctx context.Context, h LDAPO
 // Look up posixgroup entries, either through objectlass or parent is ou=groups or ou=users
 // Returns: LDAPResultSuccess, LDAPResultOther, LDAPResultOperationsError
 func (l LDAPOpsHelper) searchMaybePosixGroups(ctx context.Context, h LDAPOpsHandler, baseDN string, searchBaseDN string, searchReq ldap.SearchRequest, filterEntity string) (resultentries []*ldap.Entry, ldapresultcode ldap.LDAPResultCode) {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.searchMaybePosixGroups")
-	defer span.End()
-
 	hierarchy := "ou=groups"
 	if filterEntity != "posixgroup" {
 		bits := strings.Split(strings.Replace(searchBaseDN, baseDN, "", 1), ",")
@@ -550,9 +489,6 @@ func (l LDAPOpsHelper) searchMaybePosixGroups(ctx context.Context, h LDAPOpsHand
 // Returns: LDAPResultSuccess, LDAPResultOther, LDAPResultOperationsError
 // This function ignores scopes... for now
 func (l LDAPOpsHelper) searchMaybePosixAccounts(ctx context.Context, h LDAPOpsHandler, baseDN string, searchBaseDN string, searchReq ldap.SearchRequest, filterEntity string) (resultentries []*ldap.Entry, ldapresultcode ldap.LDAPResultCode) {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.searchMaybePosixAccounts")
-	defer span.End()
-
 	switch filterEntity {
 	case "posixaccount", "shadowaccount", "":
 		h.GetLog().Info().Str("default case", filterEntity).Msg("Search request")
@@ -633,9 +569,6 @@ func (l LDAPOpsHelper) preFilterEntries(ctx context.Context, searchBaseDN string
 }
 
 func (l LDAPOpsHelper) findUser(ctx context.Context, h LDAPOpsHandler, bindDN string, checkGroup bool) (userWhenFound *config.User, resultCode ldap.LDAPResultCode) {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.findUser")
-	defer span.End()
-
 	var user config.User
 
 	baseDN := strings.ToLower("," + h.GetBackend().BaseDN)
@@ -720,9 +653,6 @@ func (l LDAPOpsHelper) checkCapability(ctx context.Context, user config.User, ac
 // library will weed out this entry since it does *not* contain an objectclass attribute
 // so we are going to re-inject it to keep the LDAP library happy
 func (l LDAPOpsHelper) collectRequestedAttributesBack(ctx context.Context, attrs []*ldap.EntryAttribute, searchReq ldap.SearchRequest) []*ldap.EntryAttribute {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.collectRequestedAttributesBack")
-	defer span.End()
-
 	attbits := configattributematcher.FindStringSubmatch(searchReq.Filter)
 	if len(attbits) == 3 {
 		foundattname := false
@@ -742,9 +672,6 @@ func (l LDAPOpsHelper) collectRequestedAttributesBack(ctx context.Context, attrs
 
 // return true if we should not process the current operation
 func (l LDAPOpsHelper) isInTimeout(ctx context.Context, handler LDAPOpsHandler, conn net.Conn) bool {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.isInTimeout")
-	defer span.End()
-
 	cfg := handler.GetCfg()
 	if !cfg.Behaviors.LimitFailedBinds {
 		return false
@@ -771,9 +698,6 @@ func (l LDAPOpsHelper) isInTimeout(ctx context.Context, handler LDAPOpsHandler, 
 }
 
 func (l LDAPOpsHelper) maybePutInTimeout(ctx context.Context, handler LDAPOpsHandler, conn net.Conn, noteFailure bool) bool {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.maybePutInTimeout")
-	defer span.End()
-
 	cfg := handler.GetCfg()
 	if !cfg.Behaviors.LimitFailedBinds {
 		return false
@@ -814,8 +738,6 @@ func (l LDAPOpsHelper) maybePutInTimeout(ctx context.Context, handler LDAPOpsHan
 }
 
 func (l LDAPOpsHelper) getAddr(ctx context.Context, conn net.Conn) string {
-	ctx, span := l.tracer.Start(ctx, "handler.LDAPOpsHelper.getAddr")
-	defer span.End()
 
 	fullAddr := conn.RemoteAddr().String()
 	sep := strings.LastIndex(fullAddr, ":")
