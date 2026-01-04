@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/glauth/glauth/v2/pkg/config"
+	"github.com/franchb/glauth/v2/pkg/config"
 	"github.com/glauth/ldap"
 	"golang.org/x/crypto/bcrypt"
 )

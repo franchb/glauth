@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/glauth/glauth/v2/pkg/config"
+	"github.com/franchb/glauth/v2/pkg/config"
 )
 
 // Option defines a single option function.

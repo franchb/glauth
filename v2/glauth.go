@@ -9,10 +9,10 @@ import (
 
 	"log/slog"
 
-	"github.com/glauth/glauth/v2/internal/toml"
-	"github.com/glauth/glauth/v2/pkg/config"
-	"github.com/glauth/glauth/v2/pkg/logging"
-	"github.com/glauth/glauth/v2/pkg/server"
+	"github.com/franchb/glauth/v2/internal/toml"
+	"github.com/franchb/glauth/v2/pkg/config"
+	"github.com/franchb/glauth/v2/pkg/logging"
+	"github.com/franchb/glauth/v2/pkg/server"
 )
 
 var (

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/glauth/glauth/v2/pkg/config"
+	"github.com/franchb/glauth/v2/pkg/config"
 	"github.com/glauth/ldap"
 )
 

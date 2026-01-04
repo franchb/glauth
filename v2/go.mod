@@ -1,4 +1,4 @@
-module github.com/glauth/glauth/v2
+module github.com/franchb/glauth/v2
 
 go 1.25
 
