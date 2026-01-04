@@ -7,18 +7,16 @@ import (
 	"os/signal"
 	"syscall"
 
+	"log/slog"
+
 	"github.com/glauth/glauth/v2/internal/toml"
-	"github.com/glauth/glauth/v2/internal/version"
 	"github.com/glauth/glauth/v2/pkg/config"
-	"github.com/glauth/glauth/v2/pkg/frontend"
 	"github.com/glauth/glauth/v2/pkg/logging"
 	"github.com/glauth/glauth/v2/pkg/server"
-	"github.com/glauth/glauth/v2/pkg/stats"
-	"github.com/rs/zerolog"
 )
 
 var (
-	log zerolog.Logger
+	log slog.Logger
 
 	activeConfig = &config.Config{}
 )
@@ -40,17 +38,6 @@ func Start(ctx context.Context) {
 }
 func startService(ctx context.Context) {
 	// stats
-	stats.General.Set("version", stats.Stringer(version.Version))
-
-	// web API
-	if activeConfig.API.Enabled {
-		log.Info().Msg("Web API enabled")
-
-		go frontend.RunAPI(
-			frontend.Logger(log),
-			frontend.Config(&activeConfig.API),
-		)
-	}
 
 	var err error
 
@@ -60,13 +47,13 @@ func startService(ctx context.Context) {
 	)
 
 	if err != nil {
-		log.Error().Err(err).Msg("could not create server")
+		log.Error("could not create server", "err", err)
 		os.Exit(1)
 	}
 
 	go func() {
 		if err := s.ListenAndServe(); err != nil {
-			log.Error().Err(err).Msg("could not start LDAP server")
+			log.Error("could not start LDAP server", "err", err)
 			os.Exit(1)
 		}
 	}()
@@ -87,6 +74,6 @@ func startService(ctx context.Context) {
 	// Optionally, you could run srv.Shutdown in a goroutine and block on
 	// <-ctx.Done() if your application should wait for other services
 	// to finalize based on context cancellation.
-	log.Info().Msg("AP exit")
+	log.Info("AP exit")
 	os.Exit(0)
 }

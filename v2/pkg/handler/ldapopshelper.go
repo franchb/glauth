@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,10 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rs/zerolog"
-
 	"github.com/glauth/glauth/v2/pkg/config"
-	"github.com/glauth/glauth/v2/pkg/stats"
 	"github.com/glauth/ldap"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -26,7 +24,7 @@ var emailmatcher = regexp.MustCompile("^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z
 
 type LDAPOpsHandler interface {
 	GetBackend() config.Backend
-	GetLog() *zerolog.Logger
+	GetLog() *slog.Logger
 	GetCfg() *config.Config
 
 	FindUser(ctx context.Context, userName string, searchByUPN bool) (f bool, u config.User, err error)
@@ -65,26 +63,17 @@ func (l LDAPOpsHelper) Bind(ctx context.Context, h LDAPOpsHandler, bindDN, bindS
 
 	bindDN = strings.ToLower(bindDN)
 
-	h.GetLog().Info().Str("binddn", bindDN).Str("basedn", h.GetBackend().BaseDN).Str("src", conn.RemoteAddr().String()).Msg("Bind request")
-
-	stats.Frontend.Add("bind_reqs", 1)
+	h.GetLog().Info("Bind request", "binddn", bindDN, "basedn", h.GetBackend().BaseDN, "src", conn.RemoteAddr().String())
 
 	// Special Case: bind as anonymous
 	if bindDN == "" && bindSimplePw == "" {
-		stats.Frontend.Add("bind_successes", 1)
-		h.GetLog().Info().Str("src", conn.RemoteAddr().String()).Msg("Anonymous Bind success")
+		h.GetLog().Info("Anonymous Bind success", "src", conn.RemoteAddr().String())
 		return ldap.LDAPResultSuccess, nil
 	}
 
 	user, ldapcode := l.findUser(ctx, h, bindDN, true /* checkGroup */)
 	if ldapcode != ldap.LDAPResultSuccess {
 		return ldapcode, nil
-	}
-
-	validotp := false
-
-	if len(user.Yubikey) == 0 && len(user.OTPSecret) == 0 {
-		validotp = true
 	}
 
 	// Store the full bind password provided before possibly modifying
@@ -100,11 +89,11 @@ func (l LDAPOpsHelper) Bind(ctx context.Context, h LDAPOpsHandler, bindDN, bindS
 		for index, appPw := range user.PassAppBcrypt {
 			decoded, err := hex.DecodeString(appPw)
 			if err != nil {
-				h.GetLog().Info().Str("incorrect stored hash", "(omitted)").Msg("invalid app credentials")
+				h.GetLog().Info("invalid app credentials", "incorrect stored hash", "(omitted)")
 			} else {
 				if bcrypt.CompareHashAndPassword(decoded, []byte(untouchedBindSimplePw)) == nil {
-					stats.Frontend.Add("bind_successes", 1)
-					h.GetLog().Info().Int("index", index).Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Msg("Bind success using app pw")
+
+					h.GetLog().Info("Bind success using app pw", "index", index, "binddn", bindDN, "src", conn.RemoteAddr().String())
 					return ldap.LDAPResultSuccess, nil
 				}
 			}
@@ -115,10 +104,10 @@ func (l LDAPOpsHelper) Bind(ctx context.Context, h LDAPOpsHandler, bindDN, bindS
 		hashFull.Write([]byte(untouchedBindSimplePw))
 		for index, appPw := range user.PassAppSHA256 {
 			if appPw != hex.EncodeToString(hashFull.Sum(nil)) {
-				h.GetLog().Info().Int("index", index).Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Msg("Attempt to bind app pw failed")
+				h.GetLog().Info("Attempt to bind app pw failed", "index", index, "binddn", bindDN)
 			} else {
-				stats.Frontend.Add("bind_successes", 1)
-				h.GetLog().Info().Int("index", index).Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Msg("Bind success using app pw")
+
+				h.GetLog().Info("Bind success using app pw", "index", index, "binddn", bindDN)
 				return ldap.LDAPResultSuccess, nil
 			}
 		}
@@ -126,30 +115,23 @@ func (l LDAPOpsHelper) Bind(ctx context.Context, h LDAPOpsHandler, bindDN, bindS
 	if user.PassAppCustom != nil {
 		err := user.PassAppCustom(user, untouchedBindSimplePw)
 		if err != nil {
-			h.GetLog().Info().Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Str("error", err.Error()).Msg("Attempt to bind app custom auth failed")
+			h.GetLog().Info("Attempt to bind app custom auth failed", "binddn", bindDN, "error", err)
 			return ldap.LDAPResultInvalidCredentials, nil
 		}
 
-		stats.Frontend.Add("bind_successes", 1)
-		h.GetLog().Info().Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Msg("Bind success using app custom auth")
 		return ldap.LDAPResultSuccess, nil
-	}
-
-	// Then ensure the OTP is valid before checking
-	if !validotp {
-		h.GetLog().Info().Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Msg("invalid OTP token")
-		return ldap.LDAPResultInvalidCredentials, nil
 	}
 
 	// Now, check the pasword hash
 	if user.PassBcrypt != "" {
 		decoded, err := hex.DecodeString(user.PassBcrypt)
 		if err != nil {
-			h.GetLog().Info().Str("incorrect stored hash", "(omitted)").Msg("invalid credentials")
+			h.GetLog().Info("invalid credentials")
 			return ldap.LDAPResultInvalidCredentials, nil
 		}
 		if bcrypt.CompareHashAndPassword(decoded, []byte(bindSimplePw)) != nil {
-			h.GetLog().Info().Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Msg("invalid credentials")
+			h.GetLog().Info("invalid credentials", "binddn", bindDN)
+
 			l.maybePutInTimeout(ctx, h, conn, true)
 			return ldap.LDAPResultInvalidCredentials, nil
 		}
@@ -158,14 +140,13 @@ func (l LDAPOpsHelper) Bind(ctx context.Context, h LDAPOpsHandler, bindDN, bindS
 		hash := sha256.New()
 		hash.Write([]byte(bindSimplePw))
 		if user.PassSHA256 != hex.EncodeToString(hash.Sum(nil)) {
-			h.GetLog().Info().Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Msg("invalid credentials")
+			h.GetLog().Info("invalid credentials", "binddn", bindDN)
 			l.maybePutInTimeout(ctx, h, conn, true)
 			return ldap.LDAPResultInvalidCredentials, nil
 		}
 	}
 
-	stats.Frontend.Add("bind_successes", 1)
-	h.GetLog().Info().Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Msg("Bind success")
+	h.GetLog().Info("Bind success", "binddn", bindDN)
 	return ldap.LDAPResultSuccess, nil
 }
 
@@ -204,8 +185,7 @@ func (l LDAPOpsHelper) Search(ctx context.Context, h LDAPOpsHandler, bindDN stri
 		}
 	}
 
-	h.GetLog().Info().Str("binddn", bindDN).Str("basedn", baseDN).Str("searchbasedn", searchBaseDN).Str("src", conn.RemoteAddr().String()).Int("scope", searchReq.Scope).Str("filter", searchReq.Filter).Msg("Search request")
-	stats.Frontend.Add("search_reqs", 1)
+	h.GetLog().Info("Search request", "binddn", bindDN, "basedn", baseDN, "searchbasedn", searchBaseDN, "scope", searchReq.Scope, "filter", searchReq.Filter)
 
 	switch entries, ldapcode := l.searchMaybeRootDSEQuery(ctx, h, baseDN, searchBaseDN, searchReq, anonymous); ldapcode {
 	case ldap.LDAPResultUnwillingToPerform:
@@ -269,8 +249,7 @@ func (l LDAPOpsHelper) Search(ctx context.Context, h LDAPOpsHandler, bindDN stri
 
 	switch entries, ldapcode := l.searchMaybePosixAccounts(ctx, h, baseDN, searchBaseDN, searchReq, filterEntity); ldapcode {
 	case ldap.LDAPResultSuccess:
-		stats.Frontend.Add("search_successes", 1)
-		h.GetLog().Info().Str("filter", searchReq.Filter).Msg("AP: Search OK")
+		h.GetLog().Info("AP: Search OK", "filter", searchReq.Filter)
 		return ldap.ServerSearchResult{Entries: entries, Referrals: []string{}, Controls: []ldap.Control{}, ResultCode: ldapcode}, nil
 	}
 
@@ -303,11 +282,11 @@ func (l LDAPOpsHelper) searchMaybeRootDSEQuery(ctx context.Context, h LDAPOpsHan
 	}
 	/// Only base scope searches allowed if no basedn is provided
 	if searchReq.Scope != ldap.ScopeBaseObject {
-		h.GetLog().Info().Interface("src", searchReq.Controls).Msg("Search Error: No BaseDN provided")
+		h.GetLog().Info("Search Error: No BaseDN provided")
 		return nil, ldap.LDAPResultUnwillingToPerform // KO
 	}
 
-	h.GetLog().Info().Str("special case", "root DSE").Msg("Search request")
+	h.GetLog().Info("Search request", "special case", "root DSE")
 	entries := []*ldap.Entry{}
 	attrs := []*ldap.EntryAttribute{}
 	// unfortunately, objectClass is not to be included so we will respect that
@@ -323,8 +302,7 @@ func (l LDAPOpsHelper) searchMaybeRootDSEQuery(ctx context.Context, h LDAPOpsHan
 	attrs = append(attrs, &ldap.EntryAttribute{Name: "defaultNamingContext", Values: []string{baseDN}})
 	attrs = l.collectRequestedAttributesBack(ctx, attrs, searchReq)
 	entries = append(entries, &ldap.Entry{DN: searchBaseDN, Attributes: attrs})
-	stats.Frontend.Add("search_successes", 1)
-	h.GetLog().Info().Str("filter", searchReq.Filter).Msg("AP: Root Search OK")
+	h.GetLog().Info("AP: Root Search OK", "filter", searchReq.Filter)
 	return entries, ldap.LDAPResultSuccess
 }
 
@@ -335,7 +313,7 @@ func (l LDAPOpsHelper) searchMaybeSchemaQuery(ctx context.Context, h LDAPOpsHand
 		return nil, ldap.LDAPResultOther, nil // OK
 	}
 
-	h.GetLog().Info().Str("special case", "schema discovery").Msg("Search request")
+	h.GetLog().Info("Search request", "special case", "schema discovery")
 	entries := []*ldap.Entry{}
 	attrs := []*ldap.EntryAttribute{}
 	attrs = append(attrs, &ldap.EntryAttribute{Name: "cn", Values: []string{"schema"}})
@@ -362,8 +340,7 @@ func (l LDAPOpsHelper) searchMaybeSchemaQuery(ctx context.Context, h LDAPOpsHand
 	}
 	attrs = l.collectRequestedAttributesBack(ctx, attrs, searchReq)
 	entries = append(entries, &ldap.Entry{DN: searchBaseDN, Attributes: attrs})
-	stats.Frontend.Add("search_successes", 1)
-	h.GetLog().Info().Str("filter", searchReq.Filter).Msg("AP: Schema Discovery OK")
+	h.GetLog().Info("AP: Schema Discovery OK", "filter", searchReq.Filter)
 	return entries, ldap.LDAPResultSuccess, nil
 }
 
@@ -373,7 +350,7 @@ func (l LDAPOpsHelper) searchMaybeTopLevelNodes(ctx context.Context, h LDAPOpsHa
 	if baseDN != searchBaseDN {
 		return nil, ldap.LDAPResultOther // OK
 	}
-	h.GetLog().Info().Str("special case", "top-level browse").Msg("Search request")
+	h.GetLog().Info("Search request", "special case", "top-level browse")
 	entries := []*ldap.Entry{}
 	if searchReq.Scope == ldap.ScopeBaseObject || searchReq.Scope == ldap.ScopeWholeSubtree {
 		entries = append(entries, l.topLevelRootNode(ctx, searchBaseDN))
@@ -393,8 +370,7 @@ func (l LDAPOpsHelper) searchMaybeTopLevelNodes(ctx context.Context, h LDAPOpsHa
 		}
 		entries = append(entries, userentries...)
 	}
-	stats.Frontend.Add("search_successes", 1)
-	h.GetLog().Info().Str("filter", searchReq.Filter).Msg("AP: Top-Level Browse OK")
+	h.GetLog().Info("AP: Top-Level Browse OK", "filter", searchReq.Filter)
 	return entries, ldap.LDAPResultSuccess
 }
 
@@ -404,7 +380,7 @@ func (l LDAPOpsHelper) searchMaybeTopLevelGroupsNode(ctx context.Context, h LDAP
 	if searchBaseDN != fmt.Sprintf("ou=groups,%s", baseDN) {
 		return nil, ldap.LDAPResultOther // OK
 	}
-	h.GetLog().Info().Str("special case", "top-level groups node").Msg("Search request")
+	h.GetLog().Info("Search request", "special case", "top-level groups node")
 	entries := []*ldap.Entry{}
 	if searchReq.Scope == ldap.ScopeBaseObject || searchReq.Scope == ldap.ScopeWholeSubtree {
 		entries = append(entries, l.topLevelGroupsNode(ctx, searchBaseDN, "groups"))
@@ -416,8 +392,7 @@ func (l LDAPOpsHelper) searchMaybeTopLevelGroupsNode(ctx context.Context, h LDAP
 		}
 		entries = append(entries, groupentries...)
 	}
-	stats.Frontend.Add("search_successes", 1)
-	h.GetLog().Info().Str("filter", searchReq.Filter).Msg("AP: Top-Level Groups Browse OK")
+	h.GetLog().Info("AP: Top-Level Groups Browse OK", "filter", searchReq.Filter)
 	return entries, ldap.LDAPResultSuccess
 }
 
@@ -427,7 +402,7 @@ func (l LDAPOpsHelper) searchMaybeTopLevelUsersNode(ctx context.Context, h LDAPO
 	if searchBaseDN != fmt.Sprintf("ou=users,%s", baseDN) {
 		return nil, ldap.LDAPResultOther // OK
 	}
-	h.GetLog().Info().Str("special case", "top-level users node").Msg("Search request")
+	h.GetLog().Info("Search request", "special case", "top-level users node")
 	entries := []*ldap.Entry{}
 	if searchReq.Scope == ldap.ScopeBaseObject || searchReq.Scope == ldap.ScopeWholeSubtree {
 		entries = append(entries, l.topLevelUsersNode(ctx, searchBaseDN))
@@ -446,8 +421,7 @@ func (l LDAPOpsHelper) searchMaybeTopLevelUsersNode(ctx context.Context, h LDAPO
 		}
 		entries = append(entries, userentries...)
 	}
-	stats.Frontend.Add("search_successes", 1)
-	h.GetLog().Info().Str("filter", searchReq.Filter).Msg("AP: Top-Level Users Browse OK")
+	h.GetLog().Info("AP: Top-Level Users Browse OK", "filter", searchReq.Filter)
 	return entries, ldap.LDAPResultSuccess
 }
 
@@ -462,7 +436,7 @@ func (l LDAPOpsHelper) searchMaybePosixGroups(ctx context.Context, h LDAPOpsHand
 		}
 		hierarchy = bits[1]
 	}
-	h.GetLog().Info().Str("special case", "posix groups").Msg("Search request")
+	h.GetLog().Info("Search request", "special case", "posix groups")
 	entries := []*ldap.Entry{}
 	if searchReq.Scope == ldap.ScopeBaseObject || searchReq.Scope == ldap.ScopeWholeSubtree {
 		groupentries, err := h.FindPosixGroups(ctx, hierarchy)
@@ -480,8 +454,7 @@ func (l LDAPOpsHelper) searchMaybePosixGroups(ctx context.Context, h LDAPOpsHand
 			entries = append(entries, l.preFilterEntries(ctx, searchBaseDN, userentries)...)
 		}
 	}
-	stats.Frontend.Add("search_successes", 1)
-	h.GetLog().Info().Str("filter", searchReq.Filter).Msg("AP: Posix Groups Search OK")
+	h.GetLog().Info("AP: Posix Groups Search OK", "filter", searchReq.Filter)
 	return entries, ldap.LDAPResultSuccess
 }
 
@@ -491,7 +464,7 @@ func (l LDAPOpsHelper) searchMaybePosixGroups(ctx context.Context, h LDAPOpsHand
 func (l LDAPOpsHelper) searchMaybePosixAccounts(ctx context.Context, h LDAPOpsHandler, baseDN string, searchBaseDN string, searchReq ldap.SearchRequest, filterEntity string) (resultentries []*ldap.Entry, ldapresultcode ldap.LDAPResultCode) {
 	switch filterEntity {
 	case "posixaccount", "shadowaccount", "":
-		h.GetLog().Info().Str("default case", filterEntity).Msg("Search request")
+		h.GetLog().Info("Search request", "default case", filterEntity)
 	default:
 		return nil, ldap.LDAPResultOther // OK
 	}
@@ -514,9 +487,8 @@ func (l LDAPOpsHelper) searchMaybePosixAccounts(ctx context.Context, h LDAPOpsHa
 			entries = append(entries, e)
 		}
 	}
-
-	stats.Frontend.Add("search_successes", 1)
-	h.GetLog().Info().Str("filter", searchReq.Filter).Msg("AP: Account Search OK")
+	
+	h.GetLog().Info("AP: Account Search OK", "filter", searchReq.Filter)
 	return entries, ldap.LDAPResultSuccess
 }
 
@@ -579,13 +551,13 @@ func (l LDAPOpsHelper) findUser(ctx context.Context, h LDAPOpsHandler, bindDN st
 		var foundUser bool // = false
 		foundUser, user, _ = h.FindUser(ctx, bindDN, true)
 		if !foundUser {
-			h.GetLog().Info().Str("userprincipalname", bindDN).Msg("User not found")
+			h.GetLog().Info("User not found", "userprincipalname", bindDN)
 			return nil, ldap.LDAPResultInvalidCredentials
 		}
 	} else {
 		// parse the bindDN - ensure that the bindDN ends with the BaseDN
 		if !strings.HasSuffix(bindDN, baseDN) {
-			h.GetLog().Info().Str("binddn", bindDN).Str("basedn", h.GetBackend().BaseDN).Msg("BindDN not part of our BaseDN")
+			h.GetLog().Info("BindDN not part of our BaseDN", "binddn", bindDN, "basedn", h.GetBackend().BaseDN)
 			// h.GetLog().Warning(fmt.Sprintf("Bind Error: BindDN %s not our BaseDN %s", bindDN, baseDN))
 			return nil, ldap.LDAPResultInvalidCredentials
 		}
@@ -598,9 +570,9 @@ func (l LDAPOpsHelper) findUser(ctx context.Context, h LDAPOpsHandler, bindDN st
 			userName = strings.TrimPrefix(parts[0], h.GetBackend().NameFormatAsArray[0]+"=")
 			groupName = strings.TrimPrefix(parts[1], h.GetBackend().GroupFormatAsArray[0]+"=")
 		} else {
-			h.GetLog().Info().Str("binddn", bindDN).Int("numparts", len(parts)).Msg("BindDN should have only one or two parts")
+			h.GetLog().Info("BindDN should have only one or two parts", "binddn", bindDN, "numparts", len(parts))
 			for _, part := range parts {
-				h.GetLog().Info().Str("part", part).Msg("Parts")
+				h.GetLog().Info("Parts", "part", part)
 			}
 			return nil, ldap.LDAPResultInvalidCredentials
 		}
@@ -609,7 +581,7 @@ func (l LDAPOpsHelper) findUser(ctx context.Context, h LDAPOpsHandler, bindDN st
 		var foundUser bool // = false
 		foundUser, user, _ = h.FindUser(ctx, userName, false)
 		if !foundUser {
-			h.GetLog().Info().Str("username", userName).Msg("User not found")
+			h.GetLog().Info("User not found", "username", userName)
 			return nil, ldap.LDAPResultInvalidCredentials
 		}
 		if checkGroup {
@@ -619,14 +591,14 @@ func (l LDAPOpsHelper) findUser(ctx context.Context, h LDAPOpsHandler, bindDN st
 			if groupName != "" {
 				foundGroup, group, _ = h.FindGroup(ctx, groupName)
 				if !foundGroup {
-					h.GetLog().Info().Str("groupname", groupName).Msg("Group not found")
+					h.GetLog().Info("Group not found", "groupname", groupName)
 					return nil, ldap.LDAPResultInvalidCredentials
 				}
 			}
 			// validate group membership
 			if foundGroup {
 				if user.PrimaryGroup != group.GIDNumber {
-					h.GetLog().Info().Str("username", userName).Int("primarygroup", user.PrimaryGroup).Int("groupid", group.GIDNumber).Msg("primary group mismatch")
+					h.GetLog().Info("primary group mismatch", "username", userName, "primarygroup", user.PrimaryGroup)
 					return nil, ldap.LDAPResultInvalidCredentials
 				}
 			}

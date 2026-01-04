@@ -2,8 +2,7 @@ package server
 
 import (
 	"context"
-
-	"github.com/rs/zerolog"
+	"log/slog"
 
 	"github.com/glauth/glauth/v2/pkg/config"
 )
@@ -13,7 +12,7 @@ type Option func(o *Options)
 
 // Options defines the available options for this package.
 type Options struct {
-	Logger  zerolog.Logger
+	Logger  slog.Logger
 	Config  *config.Config
 	Context context.Context
 }
@@ -30,7 +29,7 @@ func newOptions(opts ...Option) Options {
 }
 
 // Logger provides a function to set the logger option.
-func Logger(val zerolog.Logger) Option {
+func Logger(val slog.Logger) Option {
 	return func(o *Options) {
 		o.Logger = val
 	}

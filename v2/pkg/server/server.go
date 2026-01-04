@@ -3,8 +3,7 @@ package server
 import (
 	"crypto/tls"
 	"fmt"
-
-	"github.com/rs/zerolog"
+	"log/slog"
 
 	"github.com/glauth/glauth/v2/pkg/config"
 	"github.com/glauth/glauth/v2/pkg/handler"
@@ -16,7 +15,7 @@ type LdapSvc struct {
 	l *ldap.Server
 
 	ldapstls *tls.Config
-	log      zerolog.Logger
+	log      slog.Logger
 }
 
 func NewServer(opts ...Option) (*LdapSvc, error) {
@@ -44,7 +43,7 @@ func NewServer(opts ...Option) (*LdapSvc, error) {
 		default:
 			return nil, fmt.Errorf("unsupported helper %s - must be one of 'config', 'plugin'", s.c.Helper.Datastore)
 		}
-		s.log.Info().Str("datastore", s.c.Helper.Datastore).Msg("Using helper")
+		s.log.Info("Using helper", "datastore", s.c.Helper.Datastore)
 	}
 
 	backendCounter := -1
@@ -74,7 +73,7 @@ func NewServer(opts ...Option) (*LdapSvc, error) {
 		default:
 			return nil, fmt.Errorf("unsupported backend %s - must be one of 'config', 'ldap','owncloud' or 'plugin'", backend.Datastore)
 		}
-		s.log.Info().Str("datastore", backend.Datastore).Int("position", i).Msg("Loading backend")
+		s.log.Info("Loading backend", "datastore", backend.Datastore, "position", i)
 
 		// Only our first backend will answer proper LDAP queries.
 		// Note that this could evolve towars something nicer where we would maintain
@@ -93,7 +92,7 @@ func NewServer(opts ...Option) (*LdapSvc, error) {
 
 // ListenAndServe listens on the TCP network address s.c.LDAP.Listen
 func (s *LdapSvc) ListenAndServe() error {
-	s.log.Info().Str("address", s.c.LDAP.Listen).Msg("LDAP server listening")
+	s.log.Info("LDAP server listening", "address", s.c.LDAP.Listen)
 	return s.l.ListenAndServe(s.c.LDAP.Listen)
 }
 

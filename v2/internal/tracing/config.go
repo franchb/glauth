@@ -1,18 +1,18 @@
 package tracing
 
 import (
-	"github.com/rs/zerolog"
+	"log/slog"
 )
 
 type Config struct {
 	OtelHTTPEndpoint string
 	OtelGRPCEndpoint string
-	Logger           *zerolog.Logger
+	Logger           *slog.Logger
 
 	Enabled bool
 }
 
-func NewConfig(enabled bool, otelGRPCEndpoint, otelHTTPEndpoint string, logger *zerolog.Logger) *Config {
+func NewConfig(enabled bool, otelGRPCEndpoint, otelHTTPEndpoint string, logger *slog.Logger) *Config {
 	c := new(Config)
 
 	c.OtelGRPCEndpoint = otelGRPCEndpoint

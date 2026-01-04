@@ -2,14 +2,22 @@ package toml
 
 import (
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 
 	"github.com/glauth/glauth/v2/pkg/config"
-	"github.com/rs/zerolog/log"
 )
+
+var (
+	log slog.Logger
+)
+
+func SetLogger(logger slog.Logger) {
+	log = logger
+}
 
 type Config struct {
 	Users []toml.Primitive
@@ -76,7 +84,7 @@ func usersCustomAttributes(data string, config *config.Config) {
 	md, err := toml.Decode(data, c)
 
 	if err != nil {
-		log.Error().Err(err).Msg("issues parsing users...keep going")
+		log.Error("issues parsing users...keep going", "err", err)
 		return
 	}
 
@@ -189,7 +197,7 @@ func mergeConfigs(config1 interface{}, config2 interface{}) error {
 		case nil:
 			//fmt.Println(strings.Repeat("     ", depth), " - Nil")
 		default:
-			log.Info().Str("type", reflect.TypeOf(element2).String()).Msg("Unknown element type found in configuration file. Ignoring.")
+			log.Info("Unknown element type found in configuration file. Ignoring.", "type", reflect.TypeOf(element2).String())
 		}
 		return nil
 	}
@@ -225,13 +233,13 @@ func validateConfig(cfg *config.Config) (*config.Config, error) {
 	for _, user := range cfg.Users {
 		if user.UnixID != 0 {
 			user.UIDNumber = user.UnixID
-			log.Info().Msg(fmt.Sprintf("User '%s': 'unixid' is deprecated - please move to 'uidnumber' as per documentation", user.Name))
+			log.Info(fmt.Sprintf("User '%s': 'unixid' is deprecated - please move to 'uidnumber' as per documentation", user.Name))
 		}
 	}
 	for _, group := range cfg.Groups {
 		if group.UnixID != 0 {
 			group.GIDNumber = group.UnixID
-			log.Info().Msg(fmt.Sprintf("Group '%s': 'unixid' is deprecated - please move to 'gidnumber' as per documentation", group.Name))
+			log.Info(fmt.Sprintf("Group '%s': 'unixid' is deprecated - please move to 'gidnumber' as per documentation", group.Name))
 		}
 	}
 

@@ -2,9 +2,9 @@ package handler
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/glauth/glauth/v2/pkg/config"
-	"github.com/rs/zerolog"
 )
 
 // Option defines a single option function.
@@ -14,7 +14,7 @@ type Option func(o *Options)
 type Options struct {
 	Backend    config.Backend
 	Handlers   HandlerWrapper
-	Logger     *zerolog.Logger
+	Logger     *slog.Logger
 	Config     *config.Config
 	Context    *context.Context
 	Helper     Handler
@@ -58,7 +58,7 @@ func Handlers(val HandlerWrapper) Option {
 }
 
 // Logger provides a function to set the logger option.
-func Logger(val *zerolog.Logger) Option {
+func Logger(val *slog.Logger) Option {
 	return func(o *Options) {
 		o.Logger = val
 	}

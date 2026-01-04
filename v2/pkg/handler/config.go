@@ -3,20 +3,19 @@ package handler
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/glauth/glauth/v2/pkg/config"
-	"github.com/glauth/glauth/v2/pkg/stats"
 	"github.com/glauth/ldap"
-	"github.com/rs/zerolog"
 )
 
 type configHandler struct {
 	backend    config.Backend
-	log        *zerolog.Logger
+	log        *slog.Logger
 	cfg        *config.Config
 	ldohelper  LDAPOpsHelper
 	attmatcher *regexp.Regexp
@@ -39,7 +38,7 @@ func NewConfigHandler(opts ...Option) Handler {
 func (h configHandler) GetBackend() config.Backend {
 	return h.backend
 }
-func (h configHandler) GetLog() *zerolog.Logger {
+func (h configHandler) GetLog() *slog.Logger {
 	return h.log
 }
 func (h configHandler) GetCfg() *config.Config {
@@ -183,7 +182,7 @@ func (h configHandler) FindPosixAccounts(ctx context.Context, hierarchy string) 
 					}
 					attrs = append(attrs, &ldap.EntryAttribute{Name: key, Values: values})
 				default:
-					h.log.Warn().Str("key", key).Interface("value", attr).Msg("Unable to map custom attribute")
+					h.log.Warn("Unable to map custom attribute", "key", key, "value", attr)
 				}
 			}
 		}
@@ -228,7 +227,6 @@ func (h configHandler) FindPosixGroups(ctx context.Context, hierarchy string) (e
 
 // Close does not actually close anything, because the config data is kept in memory
 func (h configHandler) Close(boundDn string, conn net.Conn) error {
-	stats.Frontend.Add("closes", 1)
 	return nil
 }
 
@@ -298,7 +296,7 @@ func (h configHandler) getGroupMemberIDs(ctx context.Context, gid int) []string 
 		if gid == g.GIDNumber {
 			for _, includegroupid := range g.IncludeGroups {
 				if includegroupid == gid {
-					h.log.Warn().Int("groupid", includegroupid).Msg("Ignoring myself as included group")
+					h.log.Warn("Ignoring myself as included group", "groupid", includegroupid)
 				} else {
 					includegroupmemberids := h.getGroupMemberIDs(ctx, includegroupid)
 
