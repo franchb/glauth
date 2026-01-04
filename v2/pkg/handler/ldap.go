@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -15,14 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog"
-	"go.opentelemetry.io/otel/trace"
-
-	"github.com/glauth/glauth/v2/internal/monitoring"
-	"github.com/glauth/glauth/v2/pkg/config"
-	"github.com/glauth/glauth/v2/pkg/stats"
+	"github.com/franchb/glauth/v2/pkg/config"
 	"github.com/glauth/ldap"
-	"github.com/pquerna/otp/totp"
 )
 
 // global matcher
@@ -32,15 +26,12 @@ type ldapHandler struct {
 	backend  config.Backend
 	handlers HandlerWrapper
 	doPing   chan bool
-	log      *zerolog.Logger
+	log      *slog.Logger
 	lock     *sync.Mutex // for sessions and servers
 	sessions map[string]ldapSession
 	servers  []ldapBackend
 	helper   Handler
 	attm     *regexp.Regexp
-
-	monitor monitoring.MonitorInterface
-	tracer  trace.Tracer
 }
 
 // global lock for ldapHandler sessions & servers manipulation
@@ -78,14 +69,12 @@ func NewLdapHandler(opts ...Option) Handler {
 		helper:   options.Helper,
 		lock:     &ldaplock,
 		attm:     ldapattributematcher,
-		monitor:  options.Monitor,
-		tracer:   options.Tracer,
 	}
 	// parse LDAP URLs
 	for _, ldapurl := range handler.backend.Servers {
 		l, err := parseURL(ldapurl)
 		if err != nil {
-			handler.log.Error().Err(err).Msg("could not parse url")
+			handler.log.Error("could not parse url", "err", err)
 			os.Exit(1)
 		}
 		handler.servers = append(handler.servers, l)
@@ -98,18 +87,8 @@ func NewLdapHandler(opts ...Option) Handler {
 }
 
 func (h ldapHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (result ldap.LDAPResultCode, err error) {
-	ctx, span := h.tracer.Start(context.Background(), "handler.ldapHandler.Bind")
-	defer span.End()
 
-	start := time.Now()
-	defer func() {
-		h.monitor.SetResponseTimeMetric(
-			map[string]string{"operation": "bind", "status": fmt.Sprintf("%v", result)},
-			time.Since(start).Seconds(),
-		)
-	}()
-
-	h.log.Debug().Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Msg("Bind request")
+	h.log.Debug("Bind request", "binddn", bindDN, "src", conn.RemoteAddr().String())
 
 	//	if h.helper != nil {
 	if true {
@@ -119,15 +98,12 @@ func (h ldapHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (result ld
 		parts := strings.Split(strings.TrimSuffix(lowerBindDN, baseDN), ",")
 		userName := strings.TrimPrefix(parts[0], h.backend.NameFormatAsArray[0]+"=")
 
-		validotp := false
-
 		// Find the user
 		// We are going to go through all backends and ask
 		// until we find our user or die of boredom.
-		user := config.User{}
 		found := false
 		for i, handler := range h.handlers.Handlers {
-			found, user, _ = handler.FindUser(ctx, userName, false)
+			found, _, _ = handler.FindUser(context.Background(), userName, false)
 			if found {
 				break
 			}
@@ -135,60 +111,27 @@ func (h ldapHandler) Bind(bindDN, bindSimplePw string, conn net.Conn) (result ld
 				break
 			}
 		}
-
-		if !found {
-			validotp = true
-		} else {
-			if len(user.OTPSecret) == 0 {
-				validotp = true
-			} else {
-				if len(bindSimplePw) > 6 {
-					otp := bindSimplePw[len(bindSimplePw)-6:]
-					bindSimplePw = bindSimplePw[:len(bindSimplePw)-6]
-					validotp = totp.Validate(otp, user.OTPSecret)
-				}
-			}
-		}
-
-		if !validotp {
-			h.log.Debug().Msg(fmt.Sprintf("Bind Error: invalid OTP token as %s from %s", bindDN, conn.RemoteAddr().String()))
-			return ldap.LDAPResultInvalidCredentials, nil
-		}
 	}
 
-	stats.Frontend.Add("bind_reqs", 1)
 	s, err := h.getSession(conn)
 	if err != nil {
-		stats.Frontend.Add("bind_ldapSession_errors", 1)
-		h.log.Debug().Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Err(err).Msg("could not get session")
+
+		h.log.Debug("could not get session", "binddn", bindDN, "src", conn.RemoteAddr().String(), "err", err)
 		return ldap.LDAPResultOperationsError, err
 	}
 	if err := s.ldap.Bind(bindDN, bindSimplePw); err != nil {
-		stats.Frontend.Add("bind_errors", 1)
-		h.log.Debug().Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Msg("invalid creds")
+		h.log.Debug("invalid creds", "binddn", bindDN, "src", conn.RemoteAddr().String())
 		return ldap.LDAPResultInvalidCredentials, nil
 	}
-	stats.Frontend.Add("bind_successes", 1)
-	h.log.Debug().Str("binddn", bindDN).Str("src", conn.RemoteAddr().String()).Msg("bind success")
+	h.log.Debug("bind success", "binddn", bindDN, "src", conn.RemoteAddr().String())
 	return ldap.LDAPResultSuccess, nil
 }
 
 func (h ldapHandler) Search(boundDN string, searchReq ldap.SearchRequest, conn net.Conn) (result ldap.ServerSearchResult, err error) {
-	ctx, span := h.tracer.Start(context.Background(), "handler.ldapHandler.Search")
-	defer span.End()
-
-	start := time.Now()
-	defer func() {
-		h.monitor.SetResponseTimeMetric(
-			map[string]string{"operation": "search", "status": fmt.Sprintf("%v", result.ResultCode)},
-			time.Since(start).Seconds(),
-		)
-	}()
-
 	wantAttributes := true
 	wantTypesOnly := false
 
-	h.log.Debug().Str("binddn", boundDN).Str("src", conn.RemoteAddr().String()).Str("filter", searchReq.Filter).Msg("Search request")
+	h.log.Debug("Search request", "binddn", boundDN, "src", conn.RemoteAddr().String(), "filter", searchReq.Filter)
 
 	// "1.1" has special meaning: it does what an empty attribute list would do
 	// if it didn't already mean "return all attributes"
@@ -204,10 +147,9 @@ func (h ldapHandler) Search(boundDN string, searchReq ldap.SearchRequest, conn n
 		searchReq.TypesOnly = false
 	}
 
-	stats.Frontend.Add("search_reqs", 1)
 	s, err := h.getSession(conn)
 	if err != nil {
-		stats.Frontend.Add("search_ldapSession_errors", 1)
+
 		return ldap.ServerSearchResult{ResultCode: ldap.LDAPResultOperationsError}, nil
 	}
 	/*
@@ -236,7 +178,7 @@ func (h ldapHandler) Search(boundDN string, searchReq ldap.SearchRequest, conn n
 		searchReq.Controls,
 	)
 
-	h.log.Debug().Interface("request", search).Msg("Search request to backend")
+	h.log.Debug("Search request to backend", "request", search)
 	/*
 			var sr *ldap.SearchResult
 			if pagingSize > 0 {
@@ -247,17 +189,17 @@ func (h ldapHandler) Search(boundDN string, searchReq ldap.SearchRequest, conn n
 		    }
 	*/
 	sr, err := s.ldap.Search(search)
-	h.log.Debug().Interface("result", sr).Msg("Backend Search result")
+	h.log.Debug("Backend Search result", "result", sr)
 
 	if !wantAttributes {
-		h.log.Debug().Str("type", "No attributes").Msg("AP: Search Info")
+		h.log.Debug("AP: Search Info", "type", "No attributes")
 		for _, entry := range sr.Entries {
 			entry.Attributes = entry.Attributes[:0]
 		}
 	}
 
 	if wantTypesOnly {
-		h.log.Debug().Str("type", "Types only").Msg("AP: Search Info")
+		h.log.Debug("AP: Search Info", "type", "Types only")
 		for _, entry := range sr.Entries {
 			for _, attribute := range entry.Attributes {
 				attribute.Values = attribute.Values[:0]
@@ -284,10 +226,10 @@ func (h ldapHandler) Search(boundDN string, searchReq ldap.SearchRequest, conn n
 	// 3-We were asked not to return values
 	// then we re-insert the correct values in there.
 	if searchReq.Scope == 0 && searchReq.BaseDN == "" {
-		h.log.Debug().Str("type", "Root search detected").Msg("AP: Search Info")
+		h.log.Debug("AP: Search Info", "type", "Root search detected")
 	}
 
-	filters := h.buildReqAttributesList(ctx, searchReq.Filter, []string{})
+	filters := h.buildReqAttributesList(context.Background(), searchReq.Filter, []string{})
 
 	for _, filter := range filters {
 		attbits := h.attm.FindStringSubmatch(filter)
@@ -314,23 +256,20 @@ func (h ldapHandler) Search(boundDN string, searchReq ldap.SearchRequest, conn n
 		Controls:   sr.Controls,
 		ResultCode: ldap.LDAPResultSuccess,
 	}
-	h.log.Debug().Interface("result", ssr).Msg("Frontend Search result")
+	h.log.Debug("Frontend Search result", "result", ssr)
 	if err != nil {
 		e := err.(*ldap.Error)
-		h.log.Debug().Err(err).Msg("search Err")
-		stats.Frontend.Add("search_errors", 1)
+		h.log.Debug("search Err", "err", err)
+
 		ssr.ResultCode = ldap.LDAPResultCode(e.ResultCode)
 		return ssr, err
 	}
-	stats.Frontend.Add("search_successes", 1)
-	h.log.Debug().Str("filter", search.Filter).Int("numentries", len(ssr.Entries)).Msg("AP: Search OK")
+
+	h.log.Debug("AP: Search OK", "filter", search.Filter, "numentries", len(ssr.Entries))
 	return ssr, nil
 }
 
 func (h ldapHandler) buildReqAttributesList(ctx context.Context, filter string, filters []string) []string {
-	ctx, span := h.tracer.Start(ctx, "handler.ldapHandler.buildReqAttributesList")
-	defer span.End()
-
 	maxp := len(filter)
 	start := -1
 	descended := false
@@ -355,59 +294,24 @@ func (h ldapHandler) buildReqAttributesList(ctx context.Context, filter string, 
 
 // Add is not yet supported for the ldap backend
 func (h ldapHandler) Add(boundDN string, req ldap.AddRequest, conn net.Conn) (result ldap.LDAPResultCode, err error) {
-	_, span := h.tracer.Start(context.Background(), "handler.ldapHandler.Add")
-	defer span.End()
-
-	start := time.Now()
-	defer func() {
-		h.monitor.SetResponseTimeMetric(
-			map[string]string{"operation": "add", "status": fmt.Sprintf("%v", result)},
-			time.Since(start).Seconds(),
-		)
-	}()
 	return ldap.LDAPResultInsufficientAccessRights, nil
 }
 
 // Modify is not yet supported for the ldap backend
 func (h ldapHandler) Modify(boundDN string, req ldap.ModifyRequest, conn net.Conn) (result ldap.LDAPResultCode, err error) {
-	_, span := h.tracer.Start(context.Background(), "handler.ldapHandler.Modify")
-	defer span.End()
-
-	start := time.Now()
-	defer func() {
-		h.monitor.SetResponseTimeMetric(
-			map[string]string{"operation": "modify", "status": fmt.Sprintf("%v", result)},
-			time.Since(start).Seconds(),
-		)
-	}()
 	return ldap.LDAPResultInsufficientAccessRights, nil
 }
 
 // Delete is not yet supported for the ldap backend
 func (h ldapHandler) Delete(boundDN string, deleteDN string, conn net.Conn) (result ldap.LDAPResultCode, err error) {
-	_, span := h.tracer.Start(context.Background(), "handler.ldapHandler.Delete")
-	defer span.End()
-
-	start := time.Now()
-	defer func() {
-		h.monitor.SetResponseTimeMetric(
-			map[string]string{"operation": "delete", "status": fmt.Sprintf("%v", result)},
-			time.Since(start).Seconds(),
-		)
-	}()
 	return ldap.LDAPResultInsufficientAccessRights, nil
 }
 
 func (h ldapHandler) FindUser(ctx context.Context, userName string, searchByUPN bool) (found bool, user config.User, err error) {
-	ctx, span := h.tracer.Start(ctx, "handler.ldapHandler.FindUser")
-	defer span.End()
 	return false, config.User{}, nil
 }
 
 func (h ldapHandler) FindGroup(ctx context.Context, groupName string) (found bool, group config.Group, err error) {
-	ctx, span := h.tracer.Start(ctx, "handler.ldapHandler.FindGroup")
-	defer span.End()
-
 	return false, config.Group{}, nil
 }
 
@@ -416,8 +320,6 @@ func (h ldapHandler) Close(boundDn string, conn net.Conn) error {
 	h.lock.Lock()
 	defer h.lock.Unlock()
 	delete(h.sessions, connID(conn))
-	stats.Frontend.Add("closes", 1)
-	stats.Backend.Add("closes", 1)
 	return nil
 }
 
@@ -425,7 +327,7 @@ func (h ldapHandler) Close(boundDn string, conn net.Conn) error {
 func (h *ldapHandler) monitorServers() {
 	err := h.ping()
 	if err != nil {
-		h.log.Error().Err(err).Msg("could not ping server")
+		h.log.Error("could not ping server", "err", err)
 		os.Exit(1)
 		// TODO return error
 	}
@@ -433,18 +335,18 @@ func (h *ldapHandler) monitorServers() {
 		for {
 			select {
 			case <-h.doPing:
-				h.log.Warn().Msg("doPing requested due to server failure")
+				h.log.Warn("doPing requested due to server failure")
 				err = h.ping()
 				if err != nil {
-					h.log.Error().Err(err).Msg("could not ping server")
+					h.log.Error("could not ping server", "err", err)
 					os.Exit(1)
 					// TODO return error
 				}
 			case <-time.NewTimer(60 * time.Second).C:
-				h.log.Warn().Msg("doPing after timeout")
+				h.log.Warn("doPing after timeout")
 				err = h.ping()
 				if err != nil {
-					h.log.Error().Err(err).Msg("could not ping server")
+					h.log.Error("could not ping server", "err", err)
 					os.Exit(1)
 					// TODO return error
 				}
@@ -508,7 +410,7 @@ func (h ldapHandler) ping() error {
 		elapsed := time.Since(start)
 		h.lock.Lock()
 		if err != nil || l == nil {
-			h.log.Fatal().Str("hostname", s.Hostname).Int("port", s.Port).Err(err).Msg("server ping failed")
+			h.log.Error("server ping failed", "hostname", s.Hostname, "port", s.Port, "err", err)
 			h.servers[k].Ping = 0
 			h.servers[k].Status = Down
 		} else {
@@ -519,12 +421,7 @@ func (h ldapHandler) ping() error {
 		}
 		h.lock.Unlock()
 	}
-	h.log.Debug().Interface("servers", h.servers).Msg("Server health")
-	b, err := json.Marshal(h.servers)
-	if err != nil {
-		h.log.Fatal().Err(err).Msg("error encoding tail data")
-	}
-	stats.Backend.Set("servers", stats.Stringer(string(b)))
+	h.log.Debug("Server health", "servers", h.servers)
 	if healthy == false {
 		return fmt.Errorf("no healthy servers")
 	}
@@ -547,7 +444,7 @@ func (h ldapHandler) getBestServer() (ldapBackend, error) {
 	if bestping == forever {
 		return ldapBackend{}, fmt.Errorf("No healthy servers found")
 	}
-	h.log.Debug().Interface("favorite", favorite).Msg("Best server")
+	h.log.Debug("Best server", "favorite", favorite)
 	return favorite, nil
 }
 

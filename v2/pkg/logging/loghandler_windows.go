@@ -4,51 +4,53 @@
 package logging
 
 import (
-	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"os"
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/rs/zerolog"
 )
-
-// We will use this package to wrap log messages coming from libraries who have no interest
-// in generating structured output.
 
 var (
 	ldapliblogmatcher = regexp.MustCompile(`^\d{4}\/\d{1,2}\/\d{1,2} \d{1,2}\:\d{1,2}\:\d{1,2} `)
 )
 
-func InitLogging(reqdebug bool, reqsyslog bool, reqstructlog bool) zerolog.Logger {
-	var level zerolog.Level
+func InitLogging(reqdebug bool, reqsyslog bool, reqstructlog bool) slog.Logger {
+	var level slog.Level
 	if reqdebug {
-		level = zerolog.DebugLevel
+		level = slog.LevelDebug
 	} else {
-		level = zerolog.InfoLevel
+		level = slog.LevelInfo
 	}
 
-	var mainWriter io.Writer
+	var handler slog.Handler
+	opts := &slog.HandlerOptions{
+		Level: level,
+	}
+
 	if reqstructlog {
-		// Vroom vroom
-		mainWriter = os.Stderr
-		zerolog.TimeFieldFormat = time.RFC1123Z
+		opts.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				a.Value = slog.StringValue(time.Now().Format(time.RFC1123Z))
+			}
+			return a
+		}
+		handler = slog.NewJSONHandler(os.Stderr, opts)
 	} else {
-		// This is the inefficient writer
-		mainWriter = zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC1123Z}
+		handler = slog.NewTextHandler(os.Stderr, opts)
 	}
 
-	logr := zerolog.New(mainWriter).Level(level).With().Timestamp().Logger()
+	logr := *slog.New(handler)
 
-	log.SetOutput(customWriter{logr: logr, structlog: reqstructlog})
+	log.SetOutput(customWriter{logr: &logr, structlog: reqstructlog})
 
 	return logr
 }
 
 type customWriter struct {
-	logr      zerolog.Logger
+	logr      *slog.Logger
 	structlog bool
 }
 
@@ -62,9 +64,9 @@ func (e customWriter) Write(p []byte) (int, error) {
 		msg = strings.TrimSpace(string(p))
 	}
 	if e.structlog {
-		fmt.Fprintf(os.Stderr, "{\"level\":\"info\",\"time\":\"%s\",\"message\":\"%s\"}\n", time.Now().Format(time.RFC1123Z), strings.Replace(strings.TrimSpace(msg), `"`, `\"`, -1))
+		e.logr.Info(msg, "timestamp", time.Now().Format(time.RFC1123Z))
 	} else {
-		e.logr.Info().Msg(msg)
+		e.logr.Info(msg)
 	}
 	return len(p), nil
 }

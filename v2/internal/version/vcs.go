@@ -17,7 +17,7 @@ type gitInfo struct {
 func GetVersion() string {
 
 	// TODO @shipperizer see if it's worth replacing with info.Main.Path
-	// aka github.com/glauth/glauth/v2 - not great but worth checking
+	// aka github.com/franchb/glauth/v2 - not great but worth checking
 
 	name := "GLauth"
 

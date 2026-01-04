@@ -14,52 +14,17 @@ type (
 		GroupFormat               string   // e.g. cn, ou, gid, or a comma separated list of them
 		GroupFormatAsArray        []string // we will explode GroupFormat on commas
 		SSHKeyAttr                string
-		UseGraphAPI               bool   // For ownCloud backend only
-		Plugin                    string // Path to plugin library, for plugin backend only
-		PluginHandler             string // Name of plugin's main handler function
-		Database                  string // For Database backends only
 		GroupWithSearchCapability string // For PamLinux backend only
-		AnonymousDSE              bool   // For Config and Database backends only
 	}
 
 	Helper struct {
-		Enabled       bool
-		BaseDN        string
-		Datastore     string
-		Plugin        string // Path to plugin library, for plugin backend only
-		PluginHandler string // Name of plugin's main handler function
-		Database      string // For MySQL backend only TODO REname to match plugin
-	}
-
-	Frontend struct {
-		AllowedBaseDNs []string // For LDAP backend only
-		Listen         string
-		Cert           string
-		Key            string
-		TLS            bool
+		Enabled   bool
+		BaseDN    string
+		Datastore string
 	}
 
 	LDAP struct {
-		Enabled bool
-		Listen  string
-		// StartTLS parameters
-		TLS         bool
-		TLSCert     string
-		TLSKey      string
-		TLSCertPath string
-		TLSKeyPath  string
-		LegacyTLS   bool
-	}
-
-	LDAPS struct {
-		Enabled bool
-		Listen  string
-		// LDAPS TLS parameters
-		Cert      string
-		Key       string
-		CertPath  string
-		KeyPath   string
-		LegacyTLS bool
+		Listen string
 	}
 
 	API struct {
@@ -122,33 +87,17 @@ type (
 		IncludeGroups []int
 	}
 
-	Tracing struct {
-		Enabled      bool
-		GRPCEndpoint string
-		HTTPEndpoint string
-	}
-
 	Config struct {
-		API                API
-		Backend            Backend // Deprecated
-		Backends           []Backend
-		Helper             Helper
-		Behaviors          Behaviors
-		Debug              bool
-		Syslog             bool
-		StructuredLog      bool
-		WatchConfig        bool
-		YubikeyClientID    string
-		YubikeySecret      string
-		Frontend           Frontend
-		LDAP               LDAP
-		LDAPS              LDAPS
-		Groups             []Group
-		Users              []User
-		Tracing            Tracing
-		ConfigFile         string
-		AwsAccessKeyId     string
-		AwsSecretAccessKey string
-		AwsRegion          string
+		API           API
+		Backends      []Backend
+		Helper        Helper
+		Behaviors     Behaviors
+		Debug         bool
+		Syslog        bool
+		StructuredLog bool
+		LDAP          LDAP
+		Groups        []Group
+		Users         []User
+		ConfigFile    string
 	}
 )
